@@ -134,8 +134,9 @@ def main(test_name: str, horizon: int, snapshots: int, parameters: dict | None =
         "snapshots": results,
         "limitations": ["Destinations are inferred from held-out-day-excluded route and heading patterns; later ATC positions are only used for scoring.", "This validates normal movement prediction, not stampede or emergency-event prediction.", "The constant-velocity baseline intentionally has no wall or pedestrian-interaction model."],
     }
-    json_path = GENERATED / f"validation_{dataset.stem}_h{horizon}.json"
-    markdown_path = GENERATED / f"validation_{dataset.stem}_h{horizon}.md"
+    variant = "facing" if parameters.get("facing_aware", True) else "nofacing"
+    json_path = GENERATED / f"validation_{dataset.stem}_h{horizon}_{variant}.json"
+    markdown_path = GENERATED / f"validation_{dataset.stem}_h{horizon}_{variant}.md"
     json_path.write_text(json.dumps(payload, indent=2))
     markdown_path.write_text(
         f"# Social Force validation report — {dataset.stem}\n\n"
@@ -160,8 +161,9 @@ if __name__ == "__main__":
     parser.add_argument("--relaxation-time", type=float, default=0.5)
     parser.add_argument("--repulsion-strength", type=float, default=2.2)
     parser.add_argument("--repulsion-range", type=float, default=0.28)
+    parser.add_argument("--no-facing", action="store_true", help="Disable facing-angle-based interaction weighting.")
     options = parser.parse_args()
-    parameters = {"relaxation_time": options.relaxation_time, "repulsion_strength": options.repulsion_strength, "repulsion_range": options.repulsion_range}
+    parameters = {"relaxation_time": options.relaxation_time, "repulsion_strength": options.repulsion_strength, "repulsion_range": options.repulsion_range, "facing_aware": not options.no_facing}
     json_report, markdown_report = main(options.test_day, options.horizon, options.snapshots, parameters)
     print(json_report)
     print(markdown_report)

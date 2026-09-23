@@ -218,6 +218,7 @@ def observed_snapshot(dataset: Path, index: dict, timestamp: float) -> list[dict
             "y": float(row[3]) / 1000,
             "speed": float(row[5]) / 1000,
             "heading": float(row[6]),
+            "facing": float(row[7]),
         }
     return list(states.values())
 
@@ -343,6 +344,11 @@ def simulate():
     profile = json.loads(profile_path.read_text())
     walkable_mask = build_walkable_mask(dataset, GENERATED, get_map())
     parameters = calibrated_social_force_parameters()
+    # Normal ATC movement calibrated to near-zero interaction. Safety
+    # counterfactuals deliberately activate a modest, facing-aware avoidance
+    # force so that dense/counter-flow scenarios retain social interaction.
+    if scenario != "normal":
+        parameters = {**parameters, "repulsion_strength": max(float(parameters.get("repulsion_strength", 0)), 0.2), "facing_aware": True}
     simulator = SocialForceSimulation(MAP_PGM, get_map(), profile, walkable_mask, seed=42, **parameters)
     index = get_index(dataset)
     earliest, latest = float(index["first_time"]), float(index["last_time"])

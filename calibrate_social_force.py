@@ -25,7 +25,7 @@ def main(development_day: str, horizon: int, snapshots: int) -> Path:
     first, last = float(index["first_time"]), float(index["last_time"])
     times = [round(float(value), 3) for value in np.linspace(first + 1800, last - 1800 - horizon, snapshots)]
     candidates = [
-        {"relaxation_time": relaxation, "repulsion_strength": strength, "repulsion_range": spread}
+        {"relaxation_time": relaxation, "repulsion_strength": strength, "repulsion_range": spread, "facing_aware": True}
         for relaxation in (1.5, 4.0, 10.0)
         for strength in (0.0, 0.2, 0.6)
         for spread in (0.12,)

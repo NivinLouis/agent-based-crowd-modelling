@@ -14,7 +14,7 @@ from PIL import Image
 class SocialForceSimulation:
     """Continuous pedestrian movement over a map-derived 0.5 m navigation grid."""
 
-    def __init__(self, map_path: Path, map_metadata: dict, profile: dict, walkable_mask_path: Path | None = None, seed: int = 42, relaxation_time: float = 0.5, repulsion_strength: float = 2.2, repulsion_range: float = 0.28):
+    def __init__(self, map_path: Path, map_metadata: dict, profile: dict, walkable_mask_path: Path | None = None, seed: int = 42, relaxation_time: float = 0.5, repulsion_strength: float = 2.2, repulsion_range: float = 0.28, facing_aware: bool = True):
         self.random = random.Random(seed)
         self.resolution = float(map_metadata["resolution"])
         self.origin_x, self.origin_y = map_metadata["origin"][:2]
@@ -35,6 +35,7 @@ class SocialForceSimulation:
         self.relaxation_time = relaxation_time
         self.repulsion_strength = repulsion_strength
         self.repulsion_range = repulsion_range
+        self.facing_aware = facing_aware
         self.zones = {zone["id"]: zone for zone in profile["provisional_zones"]}
         self.routes = self._routes()
         self.fields: dict[str, np.ndarray] = {}
@@ -142,7 +143,7 @@ class SocialForceSimulation:
             x, y = zone["x"] + radius * math.cos(angle), zone["y"] + radius * math.sin(angle)
             row, col = self.nearest_free(*self.to_cell(x, y))
             x, y = self.to_world(row, col)
-            agents.append({"id": identifier + 1, "position": np.array([x, y], dtype=float), "velocity": np.zeros(2), "speed": self.sampled_speed(), "destination": destination, "radius": self.random.uniform(0.22, 0.30), "arrived": False})
+            agents.append({"id": identifier + 1, "position": np.array([x, y], dtype=float), "velocity": np.zeros(2), "speed": self.sampled_speed(), "destination": destination, "radius": self.random.uniform(0.22, 0.30), "facing": angle, "arrived": False})
         return agents
 
     def inferred_destination(self, position: np.ndarray, heading: float) -> str:
@@ -176,7 +177,7 @@ class SocialForceSimulation:
             velocity = np.array([math.cos(heading), math.sin(heading)], dtype=float) * min(seed["speed"], 1.8)
             # Preserve the observed instantaneous speed in forecast mode. The
             # calibrated distribution remains for synthetic arrivals only.
-            agents.append({"id": seed["id"], "position": position, "velocity": velocity, "speed": max(0.0, min(seed["speed"], 1.8)), "destination": destination, "radius": self.random.uniform(0.22, 0.30), "arrived": False})
+            agents.append({"id": seed["id"], "position": position, "velocity": velocity, "speed": max(0.0, min(seed["speed"], 1.8)), "destination": destination, "radius": self.random.uniform(0.22, 0.30), "facing": seed.get("facing", heading), "arrived": False})
         return agents
 
     def run(self, agents_count: int, duration_seconds: int, scenario: str, seeds: list[dict] | None = None) -> tuple[list[dict], dict]:
@@ -211,7 +212,13 @@ class SocialForceSimulation:
                     distance = float(np.linalg.norm(delta))
                     if 0.001 < distance < 3.0:
                         unit = delta / distance
-                        force += self.repulsion_strength * math.exp(((agent["radius"] + other["radius"]) - distance) / self.repulsion_range) * unit
+                        direction_to_other = -unit
+                        facing_vector = np.array([math.cos(agent["facing"]), math.sin(agent["facing"])])
+                        ahead = max(0.0, float(np.dot(facing_vector, direction_to_other)))
+                        # Agents retain rear collision avoidance but react more
+                        # strongly to pedestrians within their forward view.
+                        perception = 0.45 + 0.55 * ahead if self.facing_aware else 1.0
+                        force += perception * self.repulsion_strength * math.exp(((agent["radius"] + other["radius"]) - distance) / self.repulsion_range) * unit
                 new_velocity = velocity + force * dt
                 magnitude = float(np.linalg.norm(new_velocity))
                 if magnitude > 2.0:
@@ -222,6 +229,10 @@ class SocialForceSimulation:
                     new_velocity *= 0.05
                     proposal = position
                 agent["velocity"], agent["position"] = new_velocity, proposal
+                if magnitude > 0.05:
+                    target_facing = math.atan2(new_velocity[1], new_velocity[0])
+                    turn = (target_facing - agent["facing"] + math.pi) % math.tau - math.pi
+                    agent["facing"] += max(-0.35, min(0.35, turn))
                 target = self.zones[agent["destination"]]
                 if math.dist(proposal, (target["x"], target["y"])) < 0.75:
                     agent["arrived"] = True
