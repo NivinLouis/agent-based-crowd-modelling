@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ATC Crowd Safety Explorer</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <header>
+      <div>
+        <p id="dataset-day" class="eyebrow">ATC • LOADING DAY</p>
+        <h1>Crowd Safety Explorer</h1>
+      </div>
+      <p id="dataset-status" class="dataset-status">Preparing dataset…</p>
+    </header>
+    <main>
+      <section class="controls" aria-label="Replay controls">
+        <label>Tracking day <select id="dataset" aria-label="Tracking day"></select></label>
+        <label>View <select id="mode"><option value="observed">Observed replay</option><option value="simulation">Social Force ABM</option></select></label>
+        <label>Start time <input id="start-time" type="time" step="60" value="09:40"></label>
+        <label>Window <select id="duration"><option value="300">5 minutes</option><option value="600">10 minutes</option><option value="900">15 minutes</option></select></label>
+        <label>Sampling <select id="sample"><option value="1">1 second</option><option value="2">2 seconds</option><option value="5">5 seconds</option></select></label>
+        <label class="simulation-control">Agents <input id="agents" type="number" min="20" max="300" step="10" value="120"></label>
+        <label class="simulation-control">Scenario <select id="scenario"><option value="normal">Normal flow</option><option value="surge">Entrance surge</option><option value="counterflow">Counter-flow</option><option value="restricted_exit">Restricted exit</option></select></label>
+        <button id="load" type="button">Load interval</button>
+        <button id="play" type="button" disabled>Play</button>
+        <label class="speed-control">Replay speed <input id="replay-speed" type="range" min="1" max="12" value="5"><output id="speed-output">5×</output></label>
+      </section>
+
+      <section class="layout">
+        <div class="map-panel">
+          <div class="map-header"><strong id="current-time">—</strong><span id="frame-status">Load an interval to begin</span></div>
+          <div class="canvas-wrap"><canvas id="map-canvas" aria-label="ATC occupancy map with pedestrian positions, density cells, and flow vectors"></canvas></div>
+          <div class="legend"><span><i class="dot"></i> tracked pedestrian</span><span><i class="heat low"></i> density (people/m²)</span><span><i class="heat high"></i> higher density</span><span><i class="arrow">→</i> mean flow</span></div>
+        </div>
+        <aside class="metrics" aria-live="polite">
+          <article><span>People in view</span><strong id="people-count">—</strong></article>
+          <article><span>Mean speed</span><strong id="mean-speed">—</strong></article>
+          <article><span>Peak local density</span><strong id="peak-density">—</strong></article>
+          <article><span>Flow condition</span><strong id="risk-level">—</strong><small id="risk-detail">Awaiting data</small></article>
+          <article class="method"><span>Interpretation</span><p>Watch highlights dense cells with slower movement or opposing flow. It is a screening signal, not a physical-pressure measurement.</p></article>
+          <article class="calibration"><span>Observed behaviour model</span><div id="profile-summary" class="profile-summary">Generating calibration profile…</div><p class="profile-note">Zones are inferred from trajectory endpoints. Confirm them against the entry/exit floor plan before scenario design.</p></article>
+        </aside>
+      </section>
+      <section class="routes-panel" aria-labelledby="routes-heading">
+        <div><p class="eyebrow">CALIBRATION OUTPUT</p><h2 id="routes-heading">Provisional movement zones and frequent routes</h2></div>
+        <div class="route-columns"><div><h3>Endpoint zones</h3><ol id="zone-list"></ol></div><div><h3>Top observed routes</h3><ol id="route-list"></ol></div></div>
+      </section>
+    </main>
+    <template id="unsupported"><p>This browser does not support the canvas required by the map replay.</p></template>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
