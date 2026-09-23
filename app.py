@@ -26,6 +26,7 @@ MAP_PGM = MAP_DIR / "localization_grid.pgm"
 GENERATED = ROOT / "generated"
 MAP_PNG = GENERATED / "atc_occupancy_map.png"
 INDEX_EVERY_SECONDS = 60
+CALIBRATION_PATH = GENERATED / "calibration_atc-20121111.json"
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 _indexes: dict[str, dict] = {}
@@ -52,6 +53,15 @@ def profile_path_for(dataset: Path) -> Path:
     if dataset.name == DEFAULT_DATASET:
         return GENERATED / "behavior_profile.json"
     return GENERATED / f"behavior_profile_{dataset.stem}.json"
+
+
+def calibrated_social_force_parameters() -> dict:
+    if not CALIBRATION_PATH.exists():
+        return {}
+    try:
+        return json.loads(CALIBRATION_PATH.read_text())["best"]["parameters"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return {}
 
 
 def read_map_metadata() -> dict:
@@ -332,7 +342,8 @@ def simulate():
         return jsonify({"error": "This day needs a calibration profile before simulation."}), 409
     profile = json.loads(profile_path.read_text())
     walkable_mask = build_walkable_mask(dataset, GENERATED, get_map())
-    simulator = SocialForceSimulation(MAP_PGM, get_map(), profile, walkable_mask, seed=42)
+    parameters = calibrated_social_force_parameters()
+    simulator = SocialForceSimulation(MAP_PGM, get_map(), profile, walkable_mask, seed=42, **parameters)
     index = get_index(dataset)
     earliest, latest = float(index["first_time"]), float(index["last_time"])
     start = min(max(float(request.args.get("start", earliest)), earliest), latest - 1)
@@ -341,6 +352,7 @@ def simulate():
         return jsonify({"error": "No tracked people were found at the selected time."}), 422
     frames, summary = simulator.run(agents, duration, scenario, seeds)
     summary["seed_time"] = start if seeds is not None else None
+    summary["parameters"] = parameters
     return jsonify({"frames": frames, "sample_seconds": 1, "simulation": summary})
 
 

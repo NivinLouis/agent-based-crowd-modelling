@@ -106,12 +106,13 @@ def evaluate_snapshot(simulator: SocialForceSimulation, dataset: Path, index: di
     }
 
 
-def main(test_name: str, horizon: int, snapshots: int) -> tuple[Path, Path]:
+def main(test_name: str, horizon: int, snapshots: int, parameters: dict | None = None) -> tuple[Path, Path]:
     dataset = app.resolve_dataset(test_name)
     index = app.get_index(dataset)
     profile = training_profile(dataset)
     walkable_mask = build_walkable_mask(dataset, GENERATED, app.get_map())
-    simulator = SocialForceSimulation(app.MAP_PGM, app.get_map(), profile, walkable_mask, seed=42)
+    parameters = parameters or {}
+    simulator = SocialForceSimulation(app.MAP_PGM, app.get_map(), profile, walkable_mask, seed=42, **parameters)
     first, last = float(index["first_time"]), float(index["last_time"])
     # Keep snapshots away from the day edges so all forecast horizons exist.
     times = np.linspace(first + 1800, last - 1800 - horizon, snapshots)
@@ -126,6 +127,7 @@ def main(test_name: str, horizon: int, snapshots: int) -> tuple[Path, Path]:
         "test_day": dataset.name,
         "training_days": profile["source_days"],
         "horizon_seconds": horizon,
+        "social_force_parameters": parameters,
         "snapshots_requested": snapshots,
         "snapshots_with_matches": len(usable),
         "aggregate": aggregate,
@@ -155,7 +157,11 @@ if __name__ == "__main__":
     parser.add_argument("--test-day", default="atc-20121114.csv")
     parser.add_argument("--horizon", type=int, default=10)
     parser.add_argument("--snapshots", type=int, default=6)
+    parser.add_argument("--relaxation-time", type=float, default=0.5)
+    parser.add_argument("--repulsion-strength", type=float, default=2.2)
+    parser.add_argument("--repulsion-range", type=float, default=0.28)
     options = parser.parse_args()
-    json_report, markdown_report = main(options.test_day, options.horizon, options.snapshots)
+    parameters = {"relaxation_time": options.relaxation_time, "repulsion_strength": options.repulsion_strength, "repulsion_range": options.repulsion_range}
+    json_report, markdown_report = main(options.test_day, options.horizon, options.snapshots, parameters)
     print(json_report)
     print(markdown_report)

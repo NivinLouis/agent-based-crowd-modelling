@@ -14,7 +14,7 @@ from PIL import Image
 class SocialForceSimulation:
     """Continuous pedestrian movement over a map-derived 0.5 m navigation grid."""
 
-    def __init__(self, map_path: Path, map_metadata: dict, profile: dict, walkable_mask_path: Path | None = None, seed: int = 42):
+    def __init__(self, map_path: Path, map_metadata: dict, profile: dict, walkable_mask_path: Path | None = None, seed: int = 42, relaxation_time: float = 0.5, repulsion_strength: float = 2.2, repulsion_range: float = 0.28):
         self.random = random.Random(seed)
         self.resolution = float(map_metadata["resolution"])
         self.origin_x, self.origin_y = map_metadata["origin"][:2]
@@ -32,6 +32,9 @@ class SocialForceSimulation:
         self.rows, self.cols = self.free.shape
         self.cell_m = self.resolution * self.scale
         self.profile = profile
+        self.relaxation_time = relaxation_time
+        self.repulsion_strength = repulsion_strength
+        self.repulsion_range = repulsion_range
         self.zones = {zone["id"]: zone for zone in profile["provisional_zones"]}
         self.routes = self._routes()
         self.fields: dict[str, np.ndarray] = {}
@@ -171,7 +174,9 @@ class SocialForceSimulation:
                 heading = (heading + math.pi) % math.tau
                 destination = self.inferred_destination(position, heading)
             velocity = np.array([math.cos(heading), math.sin(heading)], dtype=float) * min(seed["speed"], 1.8)
-            agents.append({"id": seed["id"], "position": position, "velocity": velocity, "speed": self.sampled_speed(), "destination": destination, "radius": self.random.uniform(0.22, 0.30), "arrived": False})
+            # Preserve the observed instantaneous speed in forecast mode. The
+            # calibrated distribution remains for synthetic arrivals only.
+            agents.append({"id": seed["id"], "position": position, "velocity": velocity, "speed": max(0.0, min(seed["speed"], 1.8)), "destination": destination, "radius": self.random.uniform(0.22, 0.30), "arrived": False})
         return agents
 
     def run(self, agents_count: int, duration_seconds: int, scenario: str, seeds: list[dict] | None = None) -> tuple[list[dict], dict]:
@@ -198,7 +203,7 @@ class SocialForceSimulation:
                 if agent["arrived"]:
                     continue
                 desired = self.direction_to_destination(position[0], position[1], agent["destination"]) * agent["speed"]
-                force = (desired - velocity) / 0.5
+                force = (desired - velocity) / self.relaxation_time
                 for other in agents:
                     if other is agent:
                         continue
@@ -206,7 +211,7 @@ class SocialForceSimulation:
                     distance = float(np.linalg.norm(delta))
                     if 0.001 < distance < 3.0:
                         unit = delta / distance
-                        force += 2.2 * math.exp(((agent["radius"] + other["radius"]) - distance) / 0.28) * unit
+                        force += self.repulsion_strength * math.exp(((agent["radius"] + other["radius"]) - distance) / self.repulsion_range) * unit
                 new_velocity = velocity + force * dt
                 magnitude = float(np.linalg.norm(new_velocity))
                 if magnitude > 2.0:
