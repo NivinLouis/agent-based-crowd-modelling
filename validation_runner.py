@@ -59,8 +59,8 @@ def training_profile(test_dataset: Path) -> dict:
     }
 
 
-def snapshot_by_id(dataset: Path, index: dict, timestamp: float) -> dict[int, dict]:
-    return {state["id"]: state for state in app.observed_snapshot(dataset, index, timestamp)}
+def snapshot_by_id(dataset: Path, index: dict, timestamp: float, history_seconds: float = 0) -> dict[int, dict]:
+    return {state["id"]: state for state in app.observed_snapshot(dataset, index, timestamp, history_seconds)}
 
 
 def density_l1(predicted: dict[int, tuple[float, float]], actual: dict[int, dict], cell_m: float = 2.0) -> float:
@@ -73,8 +73,8 @@ def density_l1(predicted: dict[int, tuple[float, float]], actual: dict[int, dict
     return sum(abs(pred_cells[key] - actual_cells[key]) for key in keys) / max(1, len(actual))
 
 
-def evaluate_snapshot(simulator: SocialForceSimulation, dataset: Path, index: dict, timestamp: float, horizon: int) -> dict:
-    initial = snapshot_by_id(dataset, index, timestamp)
+def evaluate_snapshot(simulator: SocialForceSimulation, dataset: Path, index: dict, timestamp: float, horizon: int, history_seconds: float) -> dict:
+    initial = snapshot_by_id(dataset, index, timestamp, history_seconds)
     if not initial:
         return {"time": timestamp, "agents": 0, "matched": 0}
     frames, _ = simulator.run(len(initial), horizon, "normal", list(initial.values()))
@@ -106,7 +106,7 @@ def evaluate_snapshot(simulator: SocialForceSimulation, dataset: Path, index: di
     }
 
 
-def main(test_name: str, horizon: int, snapshots: int, parameters: dict | None = None) -> tuple[Path, Path]:
+def main(test_name: str, horizon: int, snapshots: int, parameters: dict | None = None, history_seconds: float = 5.0) -> tuple[Path, Path]:
     dataset = app.resolve_dataset(test_name)
     index = app.get_index(dataset)
     profile = training_profile(dataset)
@@ -116,7 +116,7 @@ def main(test_name: str, horizon: int, snapshots: int, parameters: dict | None =
     first, last = float(index["first_time"]), float(index["last_time"])
     # Keep snapshots away from the day edges so all forecast horizons exist.
     times = np.linspace(first + 1800, last - 1800 - horizon, snapshots)
-    results = [evaluate_snapshot(simulator, dataset, index, round(float(timestamp), 3), horizon) for timestamp in times]
+    results = [evaluate_snapshot(simulator, dataset, index, round(float(timestamp), 3), horizon, history_seconds) for timestamp in times]
     usable = [result for result in results if result["matched"]]
     if not usable:
         raise RuntimeError("No matched ATC trajectories were available for validation.")
@@ -127,6 +127,7 @@ def main(test_name: str, horizon: int, snapshots: int, parameters: dict | None =
         "test_day": dataset.name,
         "training_days": profile["source_days"],
         "horizon_seconds": horizon,
+        "seed_history_seconds": history_seconds,
         "social_force_parameters": parameters,
         "snapshots_requested": snapshots,
         "snapshots_with_matches": len(usable),
@@ -135,12 +136,13 @@ def main(test_name: str, horizon: int, snapshots: int, parameters: dict | None =
         "limitations": ["Destinations are inferred from held-out-day-excluded route and heading patterns; later ATC positions are only used for scoring.", "This validates normal movement prediction, not stampede or emergency-event prediction.", "The constant-velocity baseline intentionally has no wall or pedestrian-interaction model."],
     }
     variant = "facing" if parameters.get("facing_aware", True) else "nofacing"
-    json_path = GENERATED / f"validation_{dataset.stem}_h{horizon}_{variant}.json"
-    markdown_path = GENERATED / f"validation_{dataset.stem}_h{horizon}_{variant}.md"
+    history_label = f"{history_seconds:g}".replace(".", "p")
+    json_path = GENERATED / f"validation_{dataset.stem}_h{horizon}_{variant}_hist{history_label}.json"
+    markdown_path = GENERATED / f"validation_{dataset.stem}_h{horizon}_{variant}_hist{history_label}.md"
     json_path.write_text(json.dumps(payload, indent=2))
     markdown_path.write_text(
         f"# Social Force validation report — {dataset.stem}\n\n"
-        f"- Method: leave-one-day-out observed-snapshot forecast\n- Held-out test day: `{dataset.name}`\n- Training days: {len(profile['source_days'])}\n- Forecast horizon: {horizon} seconds\n- Usable snapshots: {len(usable)} of {snapshots}\n\n"
+        f"- Method: leave-one-day-out observed-snapshot forecast\n- Held-out test day: `{dataset.name}`\n- Training days: {len(profile['source_days'])}\n- Causal seed history: {history_seconds:g} seconds\n- Forecast horizon: {horizon} seconds\n- Usable snapshots: {len(usable)} of {snapshots}\n\n"
         "## Aggregate results\n\n"
         f"| Metric | Social Force | Constant velocity |\n|---|---:|---:|\n"
         f"| Final displacement error (m) | {aggregate['social_fde_m']:.3f} | {aggregate['constant_velocity_fde_m']:.3f} |\n"
@@ -161,9 +163,10 @@ if __name__ == "__main__":
     parser.add_argument("--relaxation-time", type=float, default=0.5)
     parser.add_argument("--repulsion-strength", type=float, default=2.2)
     parser.add_argument("--repulsion-range", type=float, default=0.28)
+    parser.add_argument("--history-seconds", type=float, default=5.0, help="Past ATC trajectory used to infer route intent.")
     parser.add_argument("--no-facing", action="store_true", help="Disable facing-angle-based interaction weighting.")
     options = parser.parse_args()
     parameters = {"relaxation_time": options.relaxation_time, "repulsion_strength": options.repulsion_strength, "repulsion_range": options.repulsion_range, "facing_aware": not options.no_facing}
-    json_report, markdown_report = main(options.test_day, options.horizon, options.snapshots, parameters)
+    json_report, markdown_report = main(options.test_day, options.horizon, options.snapshots, parameters, options.history_seconds)
     print(json_report)
     print(markdown_report)

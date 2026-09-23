@@ -12,6 +12,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Iterator
 
+import numpy as np
 from flask import Flask, jsonify, request, send_from_directory
 from PIL import Image
 from social_force import SocialForceSimulation
@@ -207,8 +208,13 @@ def frame_key(stamp: float, sample_seconds: float) -> int:
     return int(math.floor(stamp / sample_seconds) * sample_seconds * 1000)
 
 
-def observed_snapshot(dataset: Path, index: dict, timestamp: float) -> list[dict]:
-    """Return the latest tracked state for every person in a short time slice."""
+def observed_snapshot(dataset: Path, index: dict, timestamp: float, history_seconds: float = 0) -> list[dict]:
+    """Return current states, optionally enriched from a strictly prior history."""
+    history: dict[int, list[tuple[float, float, float]]] = defaultdict(list)
+    if history_seconds:
+        history_start = max(float(index["first_time"]), timestamp - history_seconds)
+        for row in stream_rows(dataset, history_start, timestamp, index):
+            history[int(row[1])].append((float(row[0]), float(row[2]) / 1000, float(row[3]) / 1000))
     states: dict[int, dict] = {}
     for row in stream_rows(dataset, timestamp, timestamp + 0.25, index):
         person_id = int(row[1])
@@ -220,6 +226,17 @@ def observed_snapshot(dataset: Path, index: dict, timestamp: float) -> list[dict
             "heading": float(row[6]),
             "facing": float(row[7]),
         }
+    for person_id, state in states.items():
+        points = history.get(person_id, [])
+        if len(points) < 3:
+            continue
+        times = np.array([point[0] - points[0][0] for point in points], dtype=float)
+        if np.ptp(times) < 0.1:
+            continue
+        vx, _ = np.polyfit(times, np.array([point[1] for point in points]), 1)
+        vy, _ = np.polyfit(times, np.array([point[2] for point in points]), 1)
+        smoothed_speed = float(math.hypot(vx, vy))
+        state.update({"history_start_x": points[0][1], "history_start_y": points[0][2], "history_heading": math.atan2(vy, vx) if smoothed_speed > 0.05 else state["heading"], "history_speed": smoothed_speed, "history_seconds": round(points[-1][0] - points[0][0], 3)})
     return list(states.values())
 
 
@@ -353,11 +370,13 @@ def simulate():
     index = get_index(dataset)
     earliest, latest = float(index["first_time"]), float(index["last_time"])
     start = min(max(float(request.args.get("start", earliest)), earliest), latest - 1)
-    seeds = observed_snapshot(dataset, index, start) if initialization == "observed" else None
+    history_seconds = 5.0
+    seeds = observed_snapshot(dataset, index, start, history_seconds) if initialization == "observed" else None
     if initialization == "observed" and not seeds:
         return jsonify({"error": "No tracked people were found at the selected time."}), 422
     frames, summary = simulator.run(agents, duration, scenario, seeds)
     summary["seed_time"] = start if seeds is not None else None
+    summary["history_seconds"] = history_seconds if seeds is not None else 0
     summary["parameters"] = parameters
     return jsonify({"frames": frames, "sample_seconds": 1, "simulation": summary})
 

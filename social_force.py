@@ -146,19 +146,24 @@ class SocialForceSimulation:
             agents.append({"id": identifier + 1, "position": np.array([x, y], dtype=float), "velocity": np.zeros(2), "speed": self.sampled_speed(), "destination": destination, "radius": self.random.uniform(0.22, 0.30), "facing": angle, "arrived": False})
         return agents
 
-    def inferred_destination(self, position: np.ndarray, heading: float) -> str:
-        """Choose a calibrated destination consistent with the observed heading."""
+    def inferred_destination(self, position: np.ndarray, heading: float, history_origin: np.ndarray | None = None) -> str:
+        """Choose a calibrated destination using heading and causal route context."""
         heading_vector = np.array([math.cos(heading), math.sin(heading)])
         choices, weights = [], []
-        for _, destination, route_weight in self.routes:
+        for origin, destination, route_weight in self.routes:
             target = self.zones[destination]
             vector = np.array([target["x"] - position[0], target["y"] - position[1]])
             distance = float(np.linalg.norm(vector))
             if distance < 1.0:
                 continue
             alignment = max(0.05, (1 + float(np.dot(heading_vector, vector / distance))) / 2)
+            origin_context = 1.0
+            if history_origin is not None:
+                origin_zone = self.zones[origin]
+                origin_distance = float(np.linalg.norm(history_origin - np.array([origin_zone["x"], origin_zone["y"]])))
+                origin_context = 0.35 + 0.65 * math.exp(-origin_distance / 25.0)
             choices.append(destination)
-            weights.append(route_weight * alignment)
+            weights.append(route_weight * alignment * alignment * origin_context)
         return self.random.choices(choices, weights=weights, k=1)[0] if choices else self.routes[0][1]
 
     def make_observed_agents(self, seeds: list[dict], scenario: str) -> list[dict]:
@@ -169,15 +174,17 @@ class SocialForceSimulation:
             if not self.free[row, col]:
                 row, col = self.nearest_free(row, col)
                 position = np.array(self.to_world(row, col), dtype=float)
-            heading = seed["heading"]
-            destination = self.inferred_destination(position, heading)
+            heading = seed.get("history_heading", seed["heading"])
+            history_origin = np.array([seed.get("history_start_x", position[0]), seed.get("history_start_y", position[1])], dtype=float)
+            destination = self.inferred_destination(position, heading, history_origin)
             if scenario == "counterflow":
                 heading = (heading + math.pi) % math.tau
-                destination = self.inferred_destination(position, heading)
-            velocity = np.array([math.cos(heading), math.sin(heading)], dtype=float) * min(seed["speed"], 1.8)
+                destination = self.inferred_destination(position, heading, history_origin)
+            initial_speed = seed.get("history_speed", seed["speed"])
+            velocity = np.array([math.cos(heading), math.sin(heading)], dtype=float) * min(initial_speed, 1.8)
             # Preserve the observed instantaneous speed in forecast mode. The
             # calibrated distribution remains for synthetic arrivals only.
-            agents.append({"id": seed["id"], "position": position, "velocity": velocity, "speed": max(0.0, min(seed["speed"], 1.8)), "destination": destination, "radius": self.random.uniform(0.22, 0.30), "facing": seed.get("facing", heading), "arrived": False})
+            agents.append({"id": seed["id"], "position": position, "velocity": velocity, "speed": max(0.0, min(initial_speed, 1.8)), "destination": destination, "radius": self.random.uniform(0.22, 0.30), "facing": seed.get("facing", heading), "arrived": False})
         return agents
 
     def run(self, agents_count: int, duration_seconds: int, scenario: str, seeds: list[dict] | None = None) -> tuple[list[dict], dict]:
