@@ -14,7 +14,7 @@ from PIL import Image
 class SocialForceSimulation:
     """Continuous pedestrian movement over a map-derived 0.5 m navigation grid."""
 
-    def __init__(self, map_path: Path, map_metadata: dict, profile: dict, seed: int = 42):
+    def __init__(self, map_path: Path, map_metadata: dict, profile: dict, walkable_mask_path: Path | None = None, seed: int = 42):
         self.random = random.Random(seed)
         self.resolution = float(map_metadata["resolution"])
         self.origin_x, self.origin_y = map_metadata["origin"][:2]
@@ -25,6 +25,10 @@ class SocialForceSimulation:
         cropped = pixels[: rows * self.scale, : cols * self.scale]
         # The ATC map uses 0 for occupied structure and 127 for free space.
         self.free = (cropped.reshape(rows, self.scale, cols, self.scale).mean(axis=(1, 3)) > 100)
+        if walkable_mask_path and walkable_mask_path.exists():
+            observed_free = np.load(walkable_mask_path)
+            if observed_free.shape == self.free.shape:
+                self.free &= observed_free
         self.rows, self.cols = self.free.shape
         self.cell_m = self.resolution * self.scale
         self.profile = profile
@@ -70,7 +74,15 @@ class SocialForceSimulation:
                     rr, cc = row + dr, col + dc
                     if 0 <= rr < self.rows and 0 <= cc < self.cols and self.free[rr, cc]:
                         return rr, cc
-        return row, col
+        # Some inferred endpoint-zone centres land in an untracked sliver of
+        # the map. Fall back to the nearest empirically walkable cell instead
+        # of permitting an agent to spawn outside the building footprint.
+        candidates = np.argwhere(self.free)
+        if len(candidates):
+            distances = (candidates[:, 0] - row) ** 2 + (candidates[:, 1] - col) ** 2
+            nearest = candidates[int(np.argmin(distances))]
+            return int(nearest[0]), int(nearest[1])
+        raise RuntimeError("No walkable cells are available in the simulation map.")
 
     def distance_field(self, destination: str) -> np.ndarray:
         if destination in self.fields:
@@ -127,13 +139,48 @@ class SocialForceSimulation:
             x, y = zone["x"] + radius * math.cos(angle), zone["y"] + radius * math.sin(angle)
             row, col = self.nearest_free(*self.to_cell(x, y))
             x, y = self.to_world(row, col)
-            agents.append({"id": identifier + 1, "position": np.array([x, y], dtype=float), "velocity": np.zeros(2), "speed": self.sampled_speed(), "destination": destination, "radius": self.random.uniform(0.22, 0.30)})
+            agents.append({"id": identifier + 1, "position": np.array([x, y], dtype=float), "velocity": np.zeros(2), "speed": self.sampled_speed(), "destination": destination, "radius": self.random.uniform(0.22, 0.30), "arrived": False})
         return agents
 
-    def run(self, agents_count: int, duration_seconds: int, scenario: str) -> tuple[list[dict], dict]:
-        if scenario == "surge":
-            agents_count = min(500, round(agents_count * 1.6))
-        agents = self.make_agents(agents_count, scenario)
+    def inferred_destination(self, position: np.ndarray, heading: float) -> str:
+        """Choose a calibrated destination consistent with the observed heading."""
+        heading_vector = np.array([math.cos(heading), math.sin(heading)])
+        choices, weights = [], []
+        for _, destination, route_weight in self.routes:
+            target = self.zones[destination]
+            vector = np.array([target["x"] - position[0], target["y"] - position[1]])
+            distance = float(np.linalg.norm(vector))
+            if distance < 1.0:
+                continue
+            alignment = max(0.05, (1 + float(np.dot(heading_vector, vector / distance))) / 2)
+            choices.append(destination)
+            weights.append(route_weight * alignment)
+        return self.random.choices(choices, weights=weights, k=1)[0] if choices else self.routes[0][1]
+
+    def make_observed_agents(self, seeds: list[dict], scenario: str) -> list[dict]:
+        agents = []
+        for seed in seeds:
+            position = np.array([seed["x"], seed["y"]], dtype=float)
+            row, col = self.to_cell(position[0], position[1])
+            if not self.free[row, col]:
+                row, col = self.nearest_free(row, col)
+                position = np.array(self.to_world(row, col), dtype=float)
+            heading = seed["heading"]
+            destination = self.inferred_destination(position, heading)
+            if scenario == "counterflow":
+                heading = (heading + math.pi) % math.tau
+                destination = self.inferred_destination(position, heading)
+            velocity = np.array([math.cos(heading), math.sin(heading)], dtype=float) * min(seed["speed"], 1.8)
+            agents.append({"id": seed["id"], "position": position, "velocity": velocity, "speed": self.sampled_speed(), "destination": destination, "radius": self.random.uniform(0.22, 0.30), "arrived": False})
+        return agents
+
+    def run(self, agents_count: int, duration_seconds: int, scenario: str, seeds: list[dict] | None = None) -> tuple[list[dict], dict]:
+        if seeds is not None:
+            agents = self.make_observed_agents(seeds, scenario)
+        else:
+            if scenario == "surge":
+                agents_count = min(500, round(agents_count * 1.6))
+            agents = self.make_agents(agents_count, scenario)
         dt, sample_every = 0.1, 10
         frames, arrived = [], 0
         for step in range(int(duration_seconds / dt) + 1):
@@ -142,10 +189,14 @@ class SocialForceSimulation:
                 for agent in agents:
                     x, y = agent["position"]
                     velocity = agent["velocity"]
-                    people.append([agent["id"], round(float(x), 3), round(float(y), 3), round(float(np.linalg.norm(velocity)), 3), round(float(math.atan2(velocity[1], velocity[0])) if np.linalg.norm(velocity) else 0.0, 4)])
+                    # Preserve enough coordinate precision to avoid visually
+                    # rounding an in-bounds agent across a 0.5 m grid edge.
+                    people.append([agent["id"], round(float(x), 5), round(float(y), 5), round(float(np.linalg.norm(velocity)), 3), round(float(math.atan2(velocity[1], velocity[0])) if np.linalg.norm(velocity) else 0.0, 4)])
                 frames.append({"t": float(step * dt), "people": people})
             for index, agent in enumerate(agents):
                 position, velocity = agent["position"], agent["velocity"]
+                if agent["arrived"]:
+                    continue
                 desired = self.direction_to_destination(position[0], position[1], agent["destination"]) * agent["speed"]
                 force = (desired - velocity) / 0.5
                 for other in agents:
@@ -168,5 +219,7 @@ class SocialForceSimulation:
                 agent["velocity"], agent["position"] = new_velocity, proposal
                 target = self.zones[agent["destination"]]
                 if math.dist(proposal, (target["x"], target["y"])) < 0.75:
+                    agent["arrived"] = True
+                    agent["velocity"] = np.zeros(2)
                     arrived += 1
-        return frames, {"agents": len(agents), "duration_seconds": duration_seconds, "scenario": scenario, "arrivals_proxy": arrived}
+        return frames, {"agents": len(agents), "duration_seconds": duration_seconds, "scenario": scenario, "agents_reached_destination": arrived, "initialization": "observed_snapshot" if seeds is not None else "synthetic"}

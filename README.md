@@ -47,6 +47,18 @@ This first creates or refreshes a separate profile for each day, then writes
 `generated/multiday_behavior_profile.json`. Re-run without
 `--build-profiles` to aggregate existing derivatives only.
 
+## Validation
+
+Run a leave-one-day-out validation (the test day is excluded from calibration):
+
+```bash
+python3 validation_runner.py --test-day atc-20121114.csv --horizon 10 --snapshots 6
+```
+
+This writes JSON and Markdown reports in `generated/`, comparing Social Force
+forecasts initialized from real ATC snapshots against constant-velocity
+extrapolation and later ATC observations.
+
 ## Current capabilities
 
 - reads a selected time interval from the 1 GB ATC CSV without loading it all

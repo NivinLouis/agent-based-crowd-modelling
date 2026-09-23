@@ -2,13 +2,17 @@ const canvas = document.getElementById('map-canvas');
 const ctx = canvas.getContext('2d');
 const state = { dataset: null, metadata: null, profile: null, frames: [], current: 0, playing: false, image: null, timer: null, simulation: false };
 const els = {
-  status: document.getElementById('dataset-status'), day: document.getElementById('dataset-day'), dataset: document.getElementById('dataset'), mode: document.getElementById('mode'), start: document.getElementById('start-time'), duration: document.getElementById('duration'), sample: document.getElementById('sample'), agents: document.getElementById('agents'), scenario: document.getElementById('scenario'), load: document.getElementById('load'), play: document.getElementById('play'), speed: document.getElementById('replay-speed'), speedOutput: document.getElementById('speed-output'), currentTime: document.getElementById('current-time'), frameStatus: document.getElementById('frame-status'), people: document.getElementById('people-count'), meanSpeed: document.getElementById('mean-speed'), peakDensity: document.getElementById('peak-density'), risk: document.getElementById('risk-level'), riskDetail: document.getElementById('risk-detail'), profile: document.getElementById('profile-summary'), zones: document.getElementById('zone-list'), routes: document.getElementById('route-list')
+  status: document.getElementById('dataset-status'), day: document.getElementById('dataset-day'), dataset: document.getElementById('dataset'), mode: document.getElementById('mode'), start: document.getElementById('start-time'), duration: document.getElementById('duration'), sample: document.getElementById('sample'), agents: document.getElementById('agents'), initialization: document.getElementById('initialization'), scenario: document.getElementById('scenario'), load: document.getElementById('load'), play: document.getElementById('play'), speed: document.getElementById('replay-speed'), speedOutput: document.getElementById('speed-output'), currentTime: document.getElementById('current-time'), frameStatus: document.getElementById('frame-status'), people: document.getElementById('people-count'), meanSpeed: document.getElementById('mean-speed'), peakDensity: document.getElementById('peak-density'), risk: document.getElementById('risk-level'), riskDetail: document.getElementById('risk-detail'), profile: document.getElementById('profile-summary'), zones: document.getElementById('zone-list'), routes: document.getElementById('route-list')
 };
 
 // ATC was recorded in Osaka, so controls and labels use Japan Standard Time.
 const datasetTimeZone = 'Asia/Tokyo';
 const fmtTime = stamp => new Intl.DateTimeFormat('en-GB', { timeZone: datasetTimeZone, hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false }).format(new Date(stamp * 1000));
 const fmtStart = stamp => new Intl.DateTimeFormat('en-GB', { timeZone: datasetTimeZone, hour:'2-digit', minute:'2-digit', hour12:false }).format(new Date(stamp * 1000));
+function selectedTimestamp() {
+  const [hours, minutes] = els.start.value.split(':').map(Number); const base = new Date(state.metadata.first_time * 1000); const baseParts = new Intl.DateTimeFormat('en-CA', { timeZone:datasetTimeZone, year:'numeric', month:'2-digit', day:'numeric' }).formatToParts(base); const date = Object.fromEntries(baseParts.map(p => [p.type, p.value]));
+  return Date.UTC(Number(date.year), Number(date.month) - 1, Number(date.day), hours - 9, minutes, 0) / 1000;
+}
 
 function worldToPixel(x, y) {
   const m = state.metadata.map;
@@ -64,8 +68,7 @@ function start() { if (!state.frames.length) return; state.playing = true; els.p
 async function loadWindow() {
   stop(); state.simulation = false; els.load.disabled = true; els.status.textContent = 'Reading selected interval…';
   try {
-    const [hours, minutes] = els.start.value.split(':').map(Number); const base = new Date(state.metadata.first_time * 1000); const baseParts = new Intl.DateTimeFormat('en-CA', { timeZone:datasetTimeZone, year:'numeric', month:'2-digit', day:'2-digit' }).formatToParts(base); const date = Object.fromEntries(baseParts.map(p => [p.type, p.value]));
-    const requested = Date.UTC(Number(date.year), Number(date.month) - 1, Number(date.day), hours - 9, minutes, 0) / 1000;
+    const requested = selectedTimestamp();
     const params = new URLSearchParams({ dataset: state.dataset, start: requested, duration: els.duration.value, sample: els.sample.value }); const response = await fetch(`/api/window?${params}`); const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || 'Could not read this interval.');
     state.frames = payload.frames; state.current = 0; els.play.disabled = !state.frames.length; els.status.textContent = `${payload.raw_points_read.toLocaleString()} source observations → ${payload.frames.length} replay frames`; drawFrame();
@@ -74,13 +77,14 @@ async function loadWindow() {
   }
 }
 async function loadSimulation() {
-  stop(); state.simulation = true; els.load.disabled = true; els.status.textContent = 'Running Social Force simulation…';
+  stop(); state.simulation = true; els.load.disabled = true; els.status.textContent = 'Running Social Force simulation (usually a few seconds)…';
   try {
-    const params = new URLSearchParams({ dataset: state.dataset, agents: els.agents.value, duration: 120, scenario: els.scenario.value });
+    const params = new URLSearchParams({ dataset: state.dataset, agents: els.agents.value, duration: 60, scenario: els.scenario.value, initialization: els.initialization.value, start: selectedTimestamp() });
     const response = await fetch(`/api/simulate?${params}`); const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || 'Could not run the simulation.');
     state.frames = payload.frames; state.current = 0; els.play.disabled = !state.frames.length;
-    els.status.textContent = `Social Force ABM • ${payload.simulation.agents} agents • ${payload.simulation.scenario.replace('_', ' ')}`;
+    const seeded = payload.simulation.initialization === 'observed_snapshot' ? `seeded from ${fmtTime(payload.simulation.seed_time)}` : 'synthetic spawn';
+    els.status.textContent = `Social Force ABM • ${payload.simulation.agents} agents • ${seeded}`;
     drawFrame();
   } finally { els.load.disabled = false; }
 }
@@ -110,8 +114,14 @@ async function activateDataset(dataset) {
 function setMode() {
   const simulation = els.mode.value === 'simulation';
   document.body.classList.toggle('simulation-mode', simulation);
-  els.start.disabled = simulation; els.duration.disabled = simulation; els.sample.disabled = simulation;
+  els.start.disabled = false; els.duration.disabled = simulation; els.sample.disabled = simulation;
   els.load.textContent = simulation ? 'Run simulation' : 'Load interval';
+  setInitialization();
+}
+function setInitialization() {
+  const observed = els.initialization.value === 'observed';
+  els.agents.disabled = observed;
+  els.agents.parentElement.style.opacity = observed ? '.52' : '1';
 }
 async function init() {
   try {
@@ -124,6 +134,7 @@ async function init() {
 els.load.addEventListener('click', () => (els.mode.value === 'simulation' ? loadSimulation() : loadWindow()).catch(error => { els.status.textContent = error.message; }));
 els.dataset.addEventListener('change', () => activateDataset(els.dataset.value).catch(error => { els.status.textContent = error.message; els.dataset.disabled = false; els.load.disabled = false; }));
 els.mode.addEventListener('change', setMode);
+els.initialization.addEventListener('change', setInitialization);
 els.play.addEventListener('click', () => state.playing ? stop() : start());
 els.speed.addEventListener('input', () => { els.speedOutput.textContent = `${els.speed.value}×`; if (state.playing) { stop(); start(); } });
 window.addEventListener('beforeunload', stop); setMode(); init();

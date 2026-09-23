@@ -21,7 +21,8 @@
         <label>Start time <input id="start-time" type="time" step="60" value="09:40"></label>
         <label>Window <select id="duration"><option value="300">5 minutes</option><option value="600">10 minutes</option><option value="900">15 minutes</option></select></label>
         <label>Sampling <select id="sample"><option value="1">1 second</option><option value="2">2 seconds</option><option value="5">5 seconds</option></select></label>
-        <label class="simulation-control">Agents <input id="agents" type="number" min="20" max="300" step="10" value="120"></label>
+        <label class="simulation-control">Agents <input id="agents" type="number" min="20" max="300" step="10" value="60"></label>
+        <label class="simulation-control">Initial state <select id="initialization"><option value="observed">Observed crowd snapshot</option><option value="synthetic">Synthetic zone spawn</option></select></label>
         <label class="simulation-control">Scenario <select id="scenario"><option value="normal">Normal flow</option><option value="surge">Entrance surge</option><option value="counterflow">Counter-flow</option><option value="restricted_exit">Restricted exit</option></select></label>
         <button id="load" type="button">Load interval</button>
         <button id="play" type="button" disabled>Play</button>

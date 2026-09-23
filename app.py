@@ -15,6 +15,7 @@ from typing import Iterator
 from flask import Flask, jsonify, request, send_from_directory
 from PIL import Image
 from social_force import SocialForceSimulation
+from walkable_mask import build_walkable_mask
 
 ROOT = Path(__file__).resolve().parent
 TRACKING_DIR = ROOT / "ATC-tracking"
@@ -196,6 +197,21 @@ def frame_key(stamp: float, sample_seconds: float) -> int:
     return int(math.floor(stamp / sample_seconds) * sample_seconds * 1000)
 
 
+def observed_snapshot(dataset: Path, index: dict, timestamp: float) -> list[dict]:
+    """Return the latest tracked state for every person in a short time slice."""
+    states: dict[int, dict] = {}
+    for row in stream_rows(dataset, timestamp, timestamp + 0.25, index):
+        person_id = int(row[1])
+        states[person_id] = {
+            "id": person_id,
+            "x": float(row[2]) / 1000,
+            "y": float(row[3]) / 1000,
+            "speed": float(row[5]) / 1000,
+            "heading": float(row[6]),
+        }
+    return list(states.values())
+
+
 @app.get("/")
 def home():
     return send_from_directory(ROOT / "static", "index.html")
@@ -304,16 +320,27 @@ def simulate():
         agents = min(max(int(request.args.get("agents", 120)), 20), 300)
         duration = min(max(int(request.args.get("duration", 120)), 20), 180)
         scenario = request.args.get("scenario", "normal")
+        initialization = request.args.get("initialization", "observed")
         if scenario not in {"normal", "surge", "counterflow", "restricted_exit"}:
             raise ValueError("Unknown simulation scenario.")
+        if initialization not in {"observed", "synthetic"}:
+            raise ValueError("Unknown simulation initialization.")
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
     profile_path = profile_path_for(dataset)
     if not profile_path.exists():
         return jsonify({"error": "This day needs a calibration profile before simulation."}), 409
     profile = json.loads(profile_path.read_text())
-    simulator = SocialForceSimulation(MAP_PGM, get_map(), profile, seed=42)
-    frames, summary = simulator.run(agents, duration, scenario)
+    walkable_mask = build_walkable_mask(dataset, GENERATED, get_map())
+    simulator = SocialForceSimulation(MAP_PGM, get_map(), profile, walkable_mask, seed=42)
+    index = get_index(dataset)
+    earliest, latest = float(index["first_time"]), float(index["last_time"])
+    start = min(max(float(request.args.get("start", earliest)), earliest), latest - 1)
+    seeds = observed_snapshot(dataset, index, start) if initialization == "observed" else None
+    if initialization == "observed" and not seeds:
+        return jsonify({"error": "No tracked people were found at the selected time."}), 422
+    frames, summary = simulator.run(agents, duration, scenario, seeds)
+    summary["seed_time"] = start if seeds is not None else None
     return jsonify({"frames": frames, "sample_seconds": 1, "simulation": summary})
 
 
