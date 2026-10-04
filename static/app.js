@@ -2,7 +2,7 @@ const canvas = document.getElementById('map-canvas');
 const ctx = canvas.getContext('2d');
 const state = { dataset: null, metadata: null, profile: null, frames: [], current: 0, playing: false, image: null, timer: null, simulation: false };
 const els = {
-  status: document.getElementById('dataset-status'), day: document.getElementById('dataset-day'), dataset: document.getElementById('dataset'), mode: document.getElementById('mode'), start: document.getElementById('start-time'), duration: document.getElementById('duration'), sample: document.getElementById('sample'), agents: document.getElementById('agents'), initialization: document.getElementById('initialization'), scenario: document.getElementById('scenario'), load: document.getElementById('load'), play: document.getElementById('play'), speed: document.getElementById('replay-speed'), speedOutput: document.getElementById('speed-output'), currentTime: document.getElementById('current-time'), frameStatus: document.getElementById('frame-status'), people: document.getElementById('people-count'), meanSpeed: document.getElementById('mean-speed'), peakDensity: document.getElementById('peak-density'), risk: document.getElementById('risk-level'), riskDetail: document.getElementById('risk-detail'), profile: document.getElementById('profile-summary'), zones: document.getElementById('zone-list'), routes: document.getElementById('route-list')
+  status: document.getElementById('dataset-status'), day: document.getElementById('dataset-day'), dataset: document.getElementById('dataset'), mode: document.getElementById('mode'), start: document.getElementById('start-time'), duration: document.getElementById('duration'), sample: document.getElementById('sample'), agents: document.getElementById('agents'), initialization: document.getElementById('initialization'), scenario: document.getElementById('scenario'), simulationDuration: document.getElementById('simulation-duration'), load: document.getElementById('load'), play: document.getElementById('play'), speed: document.getElementById('replay-speed'), speedOutput: document.getElementById('speed-output'), currentTime: document.getElementById('current-time'), frameStatus: document.getElementById('frame-status'), people: document.getElementById('people-count'), meanSpeed: document.getElementById('mean-speed'), peakDensity: document.getElementById('peak-density'), risk: document.getElementById('risk-level'), riskDetail: document.getElementById('risk-detail'), profile: document.getElementById('profile-summary'), zones: document.getElementById('zone-list'), routes: document.getElementById('route-list')
 };
 
 // ATC was recorded in Osaka, so controls and labels use Japan Standard Time.
@@ -79,12 +79,13 @@ async function loadWindow() {
 async function loadSimulation() {
   stop(); state.simulation = true; els.load.disabled = true; els.status.textContent = 'Running Social Force simulation (usually a few seconds)…';
   try {
-    const params = new URLSearchParams({ dataset: state.dataset, agents: els.agents.value, duration: 60, scenario: els.scenario.value, initialization: els.initialization.value, start: selectedTimestamp() });
+    const params = new URLSearchParams({ dataset: state.dataset, agents: els.agents.value, duration: els.simulationDuration.value, scenario: els.scenario.value, initialization: els.initialization.value, start: selectedTimestamp() });
     const response = await fetch(`/api/simulate?${params}`); const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || 'Could not run the simulation.');
     state.frames = payload.frames; state.current = 0; els.play.disabled = !state.frames.length;
     const seeded = payload.simulation.initialization === 'observed_snapshot' ? `seeded from ${fmtTime(payload.simulation.seed_time)}` : 'synthetic spawn';
-    els.status.textContent = `Social Force ABM • ${payload.simulation.agents} agents • ${seeded}`;
+    const interaction = payload.simulation.interaction_model === 'local_density_approximation' ? ' • capacity approximation' : '';
+    els.status.textContent = `Social Force ABM • ${payload.simulation.agents} agents • ${payload.simulation.duration_seconds}s • ${payload.sample_seconds}s output • ${seeded}${interaction}`;
     drawFrame();
   } finally { els.load.disabled = false; }
 }

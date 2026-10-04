@@ -25,7 +25,7 @@ MAP_DIR = ROOT / "ATC-map"
 MAP_YAML = MAP_DIR / "localization_grid.yaml"
 MAP_PGM = MAP_DIR / "localization_grid.pgm"
 GENERATED = ROOT / "generated"
-MAP_PNG = GENERATED / "atc_occupancy_map.png"
+MAP_PNG = GENERATED / "atc_occupancy_map_light.png"
 INDEX_EVERY_SECONDS = 60
 CALIBRATION_PATH = GENERATED / "calibration_atc-20121111.json"
 
@@ -92,7 +92,11 @@ def ensure_map_png() -> None:
     if MAP_PNG.exists() and MAP_PNG.stat().st_mtime >= MAP_PGM.stat().st_mtime:
         return
     with Image.open(MAP_PGM) as image:
-        image.convert("L").save(MAP_PNG, "PNG", optimize=True)
+        pixels = np.asarray(image.convert("L"))
+        # The source occupancy grid encodes the open floor as mid-gray. Give
+        # the dashboard a light neutral floor while preserving dark structure.
+        rendered = np.where(pixels < 80, 40, 244).astype(np.uint8)
+        Image.fromarray(rendered, mode="L").save(MAP_PNG, "PNG", optimize=True)
 
 
 def cache_is_valid(candidate: dict, dataset: Path) -> bool:
@@ -345,14 +349,21 @@ def window():
 def simulate():
     try:
         dataset = resolve_dataset(request.args.get("dataset"))
-        agents = min(max(int(request.args.get("agents", 120)), 20), 300)
-        duration = min(max(int(request.args.get("duration", 120)), 20), 180)
+        agents = min(max(int(request.args.get("agents", 300)), 20), 1000)
+        duration = min(max(int(request.args.get("duration", 300)), 20), 600)
+        sample = min(max(float(request.args.get("sample", 2)), 0.5), 10)
+        speed_multiplier = min(max(float(request.args.get("speed_multiplier", 1.0)), 0.6), 1.6)
+        radius_multiplier = min(max(float(request.args.get("radius_multiplier", 1.0)), 0.7), 1.5)
+        repulsion_strength = min(max(float(request.args.get("repulsion_strength", 0.2)), 0.0), 3.0)
         scenario = request.args.get("scenario", "normal")
         initialization = request.args.get("initialization", "observed")
         if scenario not in {"normal", "surge", "counterflow", "restricted_exit"}:
             raise ValueError("Unknown simulation scenario.")
         if initialization not in {"observed", "synthetic"}:
             raise ValueError("Unknown simulation initialization.")
+        estimated_agents = round(agents * 1.6) if initialization == "synthetic" and scenario == "surge" else agents
+        if estimated_agents * (duration / sample + 1) > 180_000:
+            raise ValueError("This run would create too many animation points. Increase output interval or reduce duration/agents.")
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
     profile_path = profile_path_for(dataset)
@@ -364,8 +375,9 @@ def simulate():
     # Normal ATC movement calibrated to near-zero interaction. Safety
     # counterfactuals deliberately activate a modest, facing-aware avoidance
     # force so that dense/counter-flow scenarios retain social interaction.
+    parameters = {**parameters, "repulsion_strength": repulsion_strength}
     if scenario != "normal":
-        parameters = {**parameters, "repulsion_strength": max(float(parameters.get("repulsion_strength", 0)), 0.2), "facing_aware": True}
+        parameters = {**parameters, "repulsion_strength": max(repulsion_strength, 0.2), "facing_aware": True}
     simulator = SocialForceSimulation(MAP_PGM, get_map(), profile, walkable_mask, seed=42, **parameters)
     index = get_index(dataset)
     earliest, latest = float(index["first_time"]), float(index["last_time"])
@@ -374,11 +386,11 @@ def simulate():
     seeds = observed_snapshot(dataset, index, start, history_seconds) if initialization == "observed" else None
     if initialization == "observed" and not seeds:
         return jsonify({"error": "No tracked people were found at the selected time."}), 422
-    frames, summary = simulator.run(agents, duration, scenario, seeds)
+    frames, summary = simulator.run(agents, duration, scenario, seeds, sample, speed_multiplier, radius_multiplier)
     summary["seed_time"] = start if seeds is not None else None
     summary["history_seconds"] = history_seconds if seeds is not None else 0
     summary["parameters"] = parameters
-    return jsonify({"frames": frames, "sample_seconds": 1, "simulation": summary})
+    return jsonify({"frames": frames, "sample_seconds": sample, "simulation": summary})
 
 
 if __name__ == "__main__":

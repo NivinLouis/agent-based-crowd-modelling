@@ -123,12 +123,12 @@ class SocialForceSimulation:
             norm = float(np.linalg.norm(vector))
         return vector / norm if norm else np.zeros(2)
 
-    def sampled_speed(self) -> float:
+    def sampled_speed(self, multiplier: float = 1.0) -> float:
         model = self.profile["speed_m_s"]
-        value = self.random.gauss(float(model["mean"]), float(model["standard_deviation"]))
-        return max(0.45, min(1.8, value))
+        value = self.random.gauss(float(model["mean"]), float(model["standard_deviation"])) * multiplier
+        return max(0.30, min(2.0, value))
 
-    def make_agents(self, count: int, scenario: str) -> list[dict]:
+    def make_agents(self, count: int, scenario: str, speed_multiplier: float = 1.0, radius_multiplier: float = 1.0) -> list[dict]:
         routes, weights = zip(*[(route[:2], route[2]) for route in self.routes])
         agents = []
         for identifier in range(count):
@@ -143,7 +143,8 @@ class SocialForceSimulation:
             x, y = zone["x"] + radius * math.cos(angle), zone["y"] + radius * math.sin(angle)
             row, col = self.nearest_free(*self.to_cell(x, y))
             x, y = self.to_world(row, col)
-            agents.append({"id": identifier + 1, "position": np.array([x, y], dtype=float), "velocity": np.zeros(2), "speed": self.sampled_speed(), "destination": destination, "radius": self.random.uniform(0.22, 0.30), "facing": angle, "arrived": False})
+            radius = max(0.15, min(0.5, self.random.uniform(0.22, 0.30) * radius_multiplier))
+            agents.append({"id": identifier + 1, "position": np.array([x, y], dtype=float), "velocity": np.zeros(2), "speed": self.sampled_speed(speed_multiplier), "destination": destination, "radius": radius, "facing": angle, "arrived": False})
         return agents
 
     def inferred_destination(self, position: np.ndarray, heading: float, history_origin: np.ndarray | None = None) -> str:
@@ -166,7 +167,7 @@ class SocialForceSimulation:
             weights.append(route_weight * alignment * alignment * origin_context)
         return self.random.choices(choices, weights=weights, k=1)[0] if choices else self.routes[0][1]
 
-    def make_observed_agents(self, seeds: list[dict], scenario: str) -> list[dict]:
+    def make_observed_agents(self, seeds: list[dict], scenario: str, speed_multiplier: float = 1.0, radius_multiplier: float = 1.0) -> list[dict]:
         agents = []
         for seed in seeds:
             position = np.array([seed["x"], seed["y"]], dtype=float)
@@ -180,21 +181,23 @@ class SocialForceSimulation:
             if scenario == "counterflow":
                 heading = (heading + math.pi) % math.tau
                 destination = self.inferred_destination(position, heading, history_origin)
-            initial_speed = seed.get("history_speed", seed["speed"])
-            velocity = np.array([math.cos(heading), math.sin(heading)], dtype=float) * min(initial_speed, 1.8)
+            initial_speed = seed.get("history_speed", seed["speed"]) * speed_multiplier
+            velocity = np.array([math.cos(heading), math.sin(heading)], dtype=float) * min(initial_speed, 2.0)
             # Preserve the observed instantaneous speed in forecast mode. The
             # calibrated distribution remains for synthetic arrivals only.
-            agents.append({"id": seed["id"], "position": position, "velocity": velocity, "speed": max(0.0, min(initial_speed, 1.8)), "destination": destination, "radius": self.random.uniform(0.22, 0.30), "facing": seed.get("facing", heading), "arrived": False})
+            radius = max(0.15, min(0.5, self.random.uniform(0.22, 0.30) * radius_multiplier))
+            agents.append({"id": seed["id"], "position": position, "velocity": velocity, "speed": max(0.0, min(initial_speed, 2.0)), "destination": destination, "radius": radius, "facing": seed.get("facing", heading), "arrived": False})
         return agents
 
-    def run(self, agents_count: int, duration_seconds: int, scenario: str, seeds: list[dict] | None = None) -> tuple[list[dict], dict]:
+    def run(self, agents_count: int, duration_seconds: int, scenario: str, seeds: list[dict] | None = None, sample_seconds: float = 1.0, speed_multiplier: float = 1.0, radius_multiplier: float = 1.0) -> tuple[list[dict], dict]:
         if seeds is not None:
-            agents = self.make_observed_agents(seeds, scenario)
+            agents = self.make_observed_agents(seeds, scenario, speed_multiplier, radius_multiplier)
         else:
             if scenario == "surge":
-                agents_count = min(500, round(agents_count * 1.6))
-            agents = self.make_agents(agents_count, scenario)
-        dt, sample_every = 0.1, 10
+                agents_count = min(1200, round(agents_count * 1.6))
+            agents = self.make_agents(agents_count, scenario, speed_multiplier, radius_multiplier)
+        dt, sample_every = 0.1, max(1, round(sample_seconds / 0.1))
+        capacity_approximation = len(agents) > 250
         frames, arrived = [], 0
         for step in range(int(duration_seconds / dt) + 1):
             if step % sample_every == 0:
@@ -206,26 +209,69 @@ class SocialForceSimulation:
                     # rounding an in-bounds agent across a 0.5 m grid edge.
                     people.append([agent["id"], round(float(x), 5), round(float(y), 5), round(float(np.linalg.norm(velocity)), 3), round(float(math.atan2(velocity[1], velocity[0])) if np.linalg.norm(velocity) else 0.0, 4)])
                 frames.append({"t": float(step * dt), "people": people})
+            # A 3 m spatial hash retains local Social Force interactions while
+            # making capacity-test runs scale with nearby neighbours rather
+            # than every possible pair of pedestrians.
+            interaction_cells: dict[tuple[int, int], list[int]] = {}
+            for index, agent in enumerate(agents):
+                x, y = agent["position"]
+                cell = (math.floor(float(x) / 3.0), math.floor(float(y) / 3.0))
+                interaction_cells.setdefault(cell, []).append(index)
+            cell_summaries: dict[tuple[int, int], tuple[np.ndarray, int, float]] = {}
+            if capacity_approximation:
+                for cell, indices in interaction_cells.items():
+                    positions = np.array([agents[item]["position"] for item in indices], dtype=float)
+                    cell_summaries[cell] = (positions.mean(axis=0), len(indices), float(np.mean([agents[item]["radius"] for item in indices])))
             for index, agent in enumerate(agents):
                 position, velocity = agent["position"], agent["velocity"]
                 if agent["arrived"]:
                     continue
                 desired = self.direction_to_destination(position[0], position[1], agent["destination"]) * agent["speed"]
                 force = (desired - velocity) / self.relaxation_time
-                for other in agents:
-                    if other is agent:
-                        continue
-                    delta = position - other["position"]
-                    distance = float(np.linalg.norm(delta))
-                    if 0.001 < distance < 3.0:
-                        unit = delta / distance
-                        direction_to_other = -unit
-                        facing_vector = np.array([math.cos(agent["facing"]), math.sin(agent["facing"])])
-                        ahead = max(0.0, float(np.dot(facing_vector, direction_to_other)))
-                        # Agents retain rear collision avoidance but react more
-                        # strongly to pedestrians within their forward view.
-                        perception = 0.45 + 0.55 * ahead if self.facing_aware else 1.0
-                        force += perception * self.repulsion_strength * math.exp(((agent["radius"] + other["radius"]) - distance) / self.repulsion_range) * unit
+                cell_row, cell_col = math.floor(float(position[0]) / 3.0), math.floor(float(position[1]) / 3.0)
+                # In an intentionally overcrowded capacity test, a single
+                # spawn cell can contain hundreds of agents. Limiting force
+                # evaluation to a local sample prevents a pathological O(n²)
+                # stall while retaining the close-neighbour pressure signal.
+                facing_vector = np.array([math.cos(agent["facing"]), math.sin(agent["facing"])])
+                if capacity_approximation:
+                    # For large stress tests, nearby cells contribute their
+                    # local crowd mass. This makes the result fast enough for
+                    # interactive capacity exploration while preserving an
+                    # explicit warning in the returned simulation summary.
+                    for row in range(cell_row - 1, cell_row + 2):
+                        for col in range(cell_col - 1, cell_col + 2):
+                            summary = cell_summaries.get((row, col))
+                            if summary is None:
+                                continue
+                            centre, count, mean_radius = summary
+                            count -= int((row, col) == (cell_row, cell_col))
+                            delta = position - centre
+                            distance = float(np.linalg.norm(delta))
+                            if count > 0 and 0.001 < distance < 3.0:
+                                unit = delta / distance
+                                ahead = max(0.0, float(np.dot(facing_vector, -unit)))
+                                perception = 0.45 + 0.55 * ahead if self.facing_aware else 1.0
+                                force += perception * count * self.repulsion_strength * math.exp(((agent["radius"] + mean_radius) - distance) / self.repulsion_range) * unit
+                else:
+                    nearby_indices = []
+                    for row in range(cell_row - 1, cell_row + 2):
+                        for col in range(cell_col - 1, cell_col + 2):
+                            nearby_indices.extend(interaction_cells.get((row, col), []))
+                    for other_index in nearby_indices[:48]:
+                        if other_index == index:
+                            continue
+                        other = agents[other_index]
+                        delta = position - other["position"]
+                        distance = float(np.linalg.norm(delta))
+                        if 0.001 < distance < 3.0:
+                            unit = delta / distance
+                            direction_to_other = -unit
+                            ahead = max(0.0, float(np.dot(facing_vector, direction_to_other)))
+                            # Agents retain rear collision avoidance but react more
+                            # strongly to pedestrians within their forward view.
+                            perception = 0.45 + 0.55 * ahead if self.facing_aware else 1.0
+                            force += perception * self.repulsion_strength * math.exp(((agent["radius"] + other["radius"]) - distance) / self.repulsion_range) * unit
                 new_velocity = velocity + force * dt
                 magnitude = float(np.linalg.norm(new_velocity))
                 if magnitude > 2.0:
@@ -245,4 +291,4 @@ class SocialForceSimulation:
                     agent["arrived"] = True
                     agent["velocity"] = np.zeros(2)
                     arrived += 1
-        return frames, {"agents": len(agents), "duration_seconds": duration_seconds, "scenario": scenario, "agents_reached_destination": arrived, "initialization": "observed_snapshot" if seeds is not None else "synthetic"}
+        return frames, {"agents": len(agents), "duration_seconds": duration_seconds, "sample_seconds": sample_seconds, "speed_multiplier": speed_multiplier, "radius_multiplier": radius_multiplier, "interaction_model": "local_density_approximation" if capacity_approximation else "individual_local_neighbours", "scenario": scenario, "agents_reached_destination": arrived, "initialization": "observed_snapshot" if seeds is not None else "synthetic"}
