@@ -1,0 +1,19 @@
+\frametitle{Code Snippets: Evaluation}
+\small
+The validator scores only person IDs observed both at the forecast start and at the future timestamp.
+\begin{lstlisting}
+shared = sorted(
+    set(simulated) & set(actual) & set(initial)
+)
+
+social_errors.append(
+    math.dist((sx, sy), (truth["x"], truth["y"]))
+)
+baseline_errors.append(
+    math.dist((bx, by), (truth["x"], truth["y"]))
+)
+\end{lstlisting}
+\begin{block}{Fair comparison}
+The Social Force forecast and constant-velocity baseline use the same initial observations and matched IDs.
+\end{block}
+\smallnote{Excerpt from \texttt{validation\_runner.py}}

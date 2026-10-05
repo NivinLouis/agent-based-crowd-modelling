@@ -1,0 +1,11 @@
+\beamer@sectionintoc {1}{Problem Statement}{4}{0}{1}
+\beamer@sectionintoc {2}{Motivation}{5}{0}{2}
+\beamer@sectionintoc {3}{Objectives}{6}{0}{3}
+\beamer@sectionintoc {4}{Literature Review}{7}{0}{4}
+\beamer@sectionintoc {5}{Architecture}{9}{0}{5}
+\beamer@sectionintoc {6}{Methodology}{11}{0}{6}
+\beamer@sectionintoc {7}{Implementation}{15}{0}{7}
+\beamer@sectionintoc {8}{Code Snippets}{18}{0}{8}
+\beamer@sectionintoc {9}{Challenges Faced}{20}{0}{9}
+\beamer@sectionintoc {10}{Future Scope}{21}{0}{10}
+\beamer@sectionintoc {11}{Reference}{22}{0}{11}
